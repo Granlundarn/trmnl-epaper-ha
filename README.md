@@ -2,7 +2,7 @@
 
 A battery-powered 7.5" e-paper calendar display using ESPHome and Home Assistant. Wakes twice daily (06:00 and 18:00), fetches today's and tomorrow's calendar events, renders them via LVGL, then returns to deep sleep.
 
-![Display showing calendar events, date, week number and battery level]()
+![Display showing calendar events, date, week number and battery level](images/display.jpg)
 
 ---
 

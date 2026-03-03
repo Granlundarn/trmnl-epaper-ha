@@ -71,14 +71,14 @@ esphome:
               now.strftime(wk, sizeof(wk), "%V");
               char today_buf[60];
               snprintf(today_buf, sizeof(today_buf), "Today: %s %d %s w.%s",
-                DAYS[now.day_of_week], now.day_of_month, MONTHS[now.month - 1], wk);
+                DAYS[now.day_of_week - 1], now.day_of_month, MONTHS[now.month - 1], wk);
               lv_label_set_text(id(lbl_today_header), today_buf);
               ESPTime tmr = ESPTime::from_epoch_local(now.timestamp + 86400);
               char wk2[4];
               tmr.strftime(wk2, sizeof(wk2), "%V");
               char tmr_buf[60];
               snprintf(tmr_buf, sizeof(tmr_buf), "Tomorrow: %s %d %s w.%s",
-                DAYS[tmr.day_of_week], tmr.day_of_month, MONTHS[tmr.month - 1], wk2);
+                DAYS[tmr.day_of_week - 1], tmr.day_of_month, MONTHS[tmr.month - 1], wk2);
               lv_label_set_text(id(lbl_tomorrow_header), tmr_buf);
               char upd[20];
               now.strftime(upd, sizeof(upd), "Updated: %H:%M");
