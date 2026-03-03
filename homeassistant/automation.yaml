@@ -1,0 +1,86 @@
+# TRMNL Calendar Automation
+#
+# Fetches today's and tomorrow's events from a Home Assistant calendar entity
+# and writes them as formatted text to two input_text helpers.
+#
+# Setup:
+#   1. Create two input_text helpers (Settings → Helpers → + Create helper → Text):
+#        Name: trmnl_today_event    | Entity ID: input_text.trmnl_today_event    | Max length: 255
+#        Name: trmnl_tomorrow_event | Entity ID: input_text.trmnl_tomorrow_event | Max length: 255
+#
+#   2. Change "calendar.family" below to your calendar entity ID.
+#
+#   3. Copy this file into your automations folder (or paste into the Automation Editor).
+#
+#   4. Run the automation manually once to populate the helpers before the first flash.
+#
+# "No events" strings:
+#   Change "No events today" / "No events tomorrow" to your preferred language.
+
+- id: trmnl_calendar_events
+  alias: TRMNL - Calendar events today & tomorrow
+  description: >-
+    Runs at HA start and every 15 minutes. Fetches calendar events for today
+    and tomorrow and stores them in input_text helpers for the TRMNL display.
+  triggers:
+    - trigger: homeassistant
+      event: start
+    - trigger: time_pattern
+      minutes: /15
+
+  actions:
+    # ── Today ──────────────────────────────────────────────────────────────────
+    - action: calendar.get_events
+      target:
+        entity_id: calendar.family          # ← Change to your calendar entity
+      data:
+        start_date_time: >-
+          {{ now().replace(hour=0, minute=0, second=0, microsecond=0) }}
+        end_date_time: >-
+          {{ (now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) }}
+      response_variable: today_resp
+
+    - variables:
+        ev_today: "{{ today_resp['calendar.family'].events | default([]) }}"
+
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.trmnl_today_event
+      data:
+        value: >-
+          {% if ev_today | length > 0 %}
+          {% for e in ev_today %}
+          • {{ e.summary }}{% if e.start is defined and e.start | length > 10 %} ({{ as_datetime(e.start).strftime('%H:%M') }}){% endif %}
+          {% endfor %}
+          {% else %}
+          No events today
+          {% endif %}
+
+    # ── Tomorrow ───────────────────────────────────────────────────────────────
+    - action: calendar.get_events
+      target:
+        entity_id: calendar.family          # ← Change to your calendar entity
+      data:
+        start_date_time: >-
+          {{ (now() + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) }}
+        end_date_time: >-
+          {{ (now() + timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0) }}
+      response_variable: tomorrow_resp
+
+    - variables:
+        ev_tomorrow: "{{ tomorrow_resp['calendar.family'].events | default([]) }}"
+
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.trmnl_tomorrow_event
+      data:
+        value: >-
+          {% if ev_tomorrow | length > 0 %}
+          {% for e in ev_tomorrow %}
+          • {{ e.summary }}{% if e.start is defined and e.start | length > 10 %} ({{ as_datetime(e.start).strftime('%H:%M') }}){% endif %}
+          {% endfor %}
+          {% else %}
+          No events tomorrow
+          {% endif %}
+
+  mode: single

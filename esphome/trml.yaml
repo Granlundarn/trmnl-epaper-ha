@@ -1,0 +1,358 @@
+substitutions:
+  device_name: trmnl
+  friendly_name: TRMNL Display
+  # Find your POSIX timezone string at:
+  # https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+  timezone: "CET-1CEST,M3.5.0,M10.5.0/3"   # Europe/Stockholm
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    # Step 1 – early boot: enable battery circuit and measure voltage
+    - priority: 600
+      then:
+        - output.turn_on: bsp_battery_enable
+        - delay: 200ms
+        - component.update: battery_voltage
+    # Step 2 – disable LVGL scrollbar on screen level via direct C call
+    - priority: 0
+      then:
+        - lambda: |-
+            lv_obj_set_scrollbar_mode(lv_scr_act(), LV_SCROLLBAR_MODE_OFF);
+            lv_obj_set_style_border_width(lv_scr_act(), 0, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(lv_scr_act(), 0, LV_PART_MAIN);
+    # Step 3 – fetch data, render display, go to sleep
+    - priority: -100
+      then:
+        - deep_sleep.prevent: deep_sleep_1
+        - wait_until:
+            condition:
+              wifi.connected:
+            timeout: 30s
+        - wait_until:
+            condition:
+              api.connected:
+            timeout: 30s
+        # Wait until calendar data has been pushed from HA
+        - wait_until:
+            condition:
+              lambda: 'return id(today_events).has_state() && id(tomorrow_events).has_state();'
+            timeout: 30s
+        # ── LOCALIZATION ────────────────────────────────────────────────────
+        # Update day names, month names and format strings for your language.
+        # Format: day array starts at Sunday (index 0).
+        #
+        # English (default):
+        #   DAYS:   {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"}
+        #   MONTHS: {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"}
+        #   today format:    "Today: %s %d %s w.%s"
+        #   tomorrow format: "Tomorrow: %s %d %s w.%s"
+        #   updated format:  "Updated: %H:%M"
+        #
+        # Swedish:
+        #   DAYS:   {"Söndag","Måndag","Tisdag","Onsdag","Torsdag","Fredag","Lördag"}
+        #   MONTHS: {"jan","feb","mar","apr","maj","jun","jul","aug","sep","okt","nov","dec"}
+        #   today format:    "Idag: %s %d %s v.%s"
+        #   tomorrow format: "Imorgon: %s %d %s v.%s"
+        #   updated format:  "Uppdaterad: %H:%M"
+        # ───────────────────────────────────────────────────────────────────
+        - lambda: |-
+            static const char* DAYS[] = {
+              "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
+            };
+            static const char* MONTHS[] = {
+              "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+            };
+            auto now = id(ha_time).now();
+            if (!now.is_valid()) now = id(sntp_time).now();
+            if (now.is_valid()) {
+              char wk[4];
+              now.strftime(wk, sizeof(wk), "%V");
+              char today_buf[60];
+              snprintf(today_buf, sizeof(today_buf), "Today: %s %d %s w.%s",
+                DAYS[now.day_of_week], now.day_of_month, MONTHS[now.month - 1], wk);
+              lv_label_set_text(id(lbl_today_header), today_buf);
+              ESPTime tmr = ESPTime::from_epoch_local(now.timestamp + 86400);
+              char wk2[4];
+              tmr.strftime(wk2, sizeof(wk2), "%V");
+              char tmr_buf[60];
+              snprintf(tmr_buf, sizeof(tmr_buf), "Tomorrow: %s %d %s w.%s",
+                DAYS[tmr.day_of_week], tmr.day_of_month, MONTHS[tmr.month - 1], wk2);
+              lv_label_set_text(id(lbl_tomorrow_header), tmr_buf);
+              char upd[20];
+              now.strftime(upd, sizeof(upd), "Updated: %H:%M");
+              lv_label_set_text(id(lbl_updated), upd);
+            }
+            if (id(today_events).has_state())
+              lv_label_set_text(id(lbl_today), id(today_events).state.c_str());
+            if (id(tomorrow_events).has_state())
+              lv_label_set_text(id(lbl_tomorrow), id(tomorrow_events).state.c_str());
+        # Give LVGL time to re-render the label buffer before display update
+        - delay: 500ms
+        # Refresh the e-paper display (blocks until busy pin is released)
+        - component.update: main_display
+        # Calculate sleep duration to next wake time (06:00 or 18:00)
+        - lambda: |-
+            auto now = id(ha_time).now();
+            if (!now.is_valid()) now = id(sntp_time).now();
+            uint64_t sleep_ms;
+            if (now.is_valid()) {
+              int min_now = now.hour * 60 + now.minute;
+              int next_wake;
+              if      (min_now <  6 * 60) next_wake =  6 * 60;
+              else if (min_now < 18 * 60) next_wake = 18 * 60;
+              else                        next_wake = 24 * 60 + 6 * 60;
+              sleep_ms = (uint64_t)(next_wake - min_now) * 60 * 1000;
+            } else {
+              sleep_ms = 6ULL * 60 * 60 * 1000; // fallback: 6h if time not synced
+            }
+            id(deep_sleep_1).set_sleep_duration(sleep_ms);
+        - deep_sleep.allow: deep_sleep_1
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+
+api:
+  encryption:
+    key: !secret trml_api_key
+
+ota:
+  - platform: esphome
+    password: !secret trml_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Hotspot"
+    password: !secret trml_ap_password
+
+captive_portal:
+
+# ── Deep sleep ────────────────────────────────────────────────────────────────
+# NOTE: OTA flashing will always fail while device is sleeping.
+# See README for USB flashing instructions.
+deep_sleep:
+  id: deep_sleep_1
+  run_duration: 300s  # Safety net — deep_sleep.prevent keeps device awake until allow
+  sleep_duration: 6h  # Fallback if time cannot be calculated
+
+# ── Battery circuit ───────────────────────────────────────────────────────────
+output:
+  - platform: gpio
+    pin: GPIO6
+    id: bsp_battery_enable
+
+sensor:
+  - platform: adc
+    pin: GPIO1
+    id: battery_voltage
+    name: "Battery Voltage"
+    update_interval: never
+    attenuation: 12db
+    filters:
+      - multiply: 2.0
+      # Calibration from Seeed XIAO ESP32-S3 Plus wiki
+      # Adjust these values for your battery if needed
+      - calibrate_linear:
+          - 4.15 -> 100.0
+          - 3.96 -> 90.0
+          - 3.91 -> 80.0
+          - 3.85 -> 70.0
+          - 3.80 -> 60.0
+          - 3.75 -> 50.0
+          - 3.68 -> 40.0
+          - 3.58 -> 30.0
+          - 3.49 -> 20.0
+          - 3.41 -> 10.0
+          - 3.30 -> 5.0
+          - 3.27 -> 0.0
+      - clamp:
+          min_value: 0
+          max_value: 100
+    on_value:
+      - lambda: |-
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%d%%", (int)x);
+          lv_label_set_text(id(lbl_battery), buf);
+
+# ── Time sources ──────────────────────────────────────────────────────────────
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: ${timezone}
+  - platform: sntp
+    id: sntp_time
+    timezone: ${timezone}
+    servers:
+      - pool.ntp.org
+      - time.google.com
+      - time.cloudflare.com
+
+# ── Calendar data from HA ─────────────────────────────────────────────────────
+text_sensor:
+  - platform: homeassistant
+    id: today_events
+    entity_id: input_text.trmnl_today_event
+    on_value:
+      - lvgl.label.update:
+          id: lbl_today
+          text: !lambda return x.c_str();
+
+  - platform: homeassistant
+    id: tomorrow_events
+    entity_id: input_text.trmnl_tomorrow_event
+    on_value:
+      - lvgl.label.update:
+          id: lbl_tomorrow
+          text: !lambda return x.c_str();
+
+# ── SPI ───────────────────────────────────────────────────────────────────────
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+
+# ── Display ───────────────────────────────────────────────────────────────────
+display:
+  - platform: waveshare_epaper
+    id: main_display
+    model: 7.50inv2
+    cs_pin: GPIO44
+    dc_pin: GPIO10
+    reset_pin: GPIO38
+    busy_pin:
+      number: GPIO4
+      inverted: true
+    update_interval: never
+
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+# Add any characters you need for your locale to the glyphs strings
+font:
+  - file: "gfonts://Roboto@500"
+    id: font_section
+    size: 26
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖabcdefghijklmnopqrstuvwxyzåäö0123456789:. "
+
+  - file: "gfonts://Roboto@700"
+    id: font_body
+    size: 22
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖabcdefghijklmnopqrstuvwxyzåäö0123456789:()-.,•/&!?'+ "
+
+  - file: "gfonts://Roboto@500"
+    id: font_footer
+    size: 18
+    glyphs: "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖabcdefghijklmnopqrstuvwxyzåäö0123456789:,.-& %"
+
+# ── LVGL UI ───────────────────────────────────────────────────────────────────
+# NOTE: On this e-paper display, LVGL colors are inverted:
+#   0x000000 = white on display
+#   0xFFFFFF = black on display
+lvgl:
+  displays:
+    - main_display
+  color_depth: 16
+  bg_color: 0x000000
+
+  pages:
+    - id: main_page
+      scrollbar_mode: "off"
+      widgets:
+        - obj:
+            width: 800
+            height: 480
+            bg_color: 0x000000
+            border_width: 0
+            outline_width: 0
+            scrollbar_mode: "off"
+            pad_all: 0
+            widgets:
+
+              # ── TODAY header ─────────────────────────────────────────────
+              - label:
+                  id: lbl_today_header
+                  x: 20
+                  y: 10
+                  text: "Today: ..."
+                  text_font: font_section
+                  text_color: 0xFFFFFF
+
+              - obj:
+                  x: 0
+                  y: 46
+                  width: 800
+                  height: 1
+                  bg_color: 0x888888
+                  border_width: 0
+
+              # ── TODAY events ─────────────────────────────────────────────
+              - label:
+                  id: lbl_today
+                  x: 20
+                  y: 52
+                  width: 760
+                  text: "Loading..."
+                  text_font: font_body
+                  text_color: 0xFFFFFF
+                  long_mode: WRAP
+
+              # ── TOMORROW header ──────────────────────────────────────────
+              - label:
+                  id: lbl_tomorrow_header
+                  x: 20
+                  y: 246
+                  text: "Tomorrow: ..."
+                  text_font: font_section
+                  text_color: 0xFFFFFF
+
+              - obj:
+                  x: 0
+                  y: 282
+                  width: 800
+                  height: 1
+                  bg_color: 0x888888
+                  border_width: 0
+
+              # ── TOMORROW events ──────────────────────────────────────────
+              - label:
+                  id: lbl_tomorrow
+                  x: 20
+                  y: 288
+                  width: 760
+                  text: "Loading..."
+                  text_font: font_body
+                  text_color: 0xFFFFFF
+                  long_mode: WRAP
+
+              # ── Footer ───────────────────────────────────────────────────
+              - obj:
+                  x: 0
+                  y: 458
+                  width: 800
+                  height: 1
+                  bg_color: 0x555555
+                  border_width: 0
+
+              - label:
+                  id: lbl_updated
+                  x: 20
+                  y: 462
+                  text: "Updated: --:--"
+                  text_font: font_footer
+                  text_color: 0x555555
+
+              - label:
+                  id: lbl_battery
+                  x: 680
+                  y: 462
+                  text: "--%"
+                  text_font: font_footer
+                  text_color: 0x555555

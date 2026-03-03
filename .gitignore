@@ -1,0 +1,8 @@
+# ESPHome secrets — never commit real credentials
+esphome/secrets.yaml
+
+# macOS
+.DS_Store
+
+# ESPHome build artifacts
+.esphome/
